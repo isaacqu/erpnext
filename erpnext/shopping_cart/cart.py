@@ -55,8 +55,6 @@ def place_order():
 	cart_settings = frappe.db.get_value("Shopping Cart Settings", None,
 		["company", "allow_items_not_in_stock"], as_dict=1)
 	quotation.company = cart_settings.company
-	if not quotation.get("customer_address"):
-		throw(_("{0} is required").format(_(quotation.meta.get_label("customer_address"))))
 
 	quotation.flags.ignore_permissions = True
 	quotation.submit()
@@ -68,7 +66,7 @@ def place_order():
 	from erpnext.selling.doctype.quotation.quotation import _make_sales_order
 	sales_order = frappe.get_doc(_make_sales_order(quotation.name, ignore_permissions=True))
 
-	if not cart_settings.allow_items_not_in_stock:
+	if not cint(cart_settings.allow_items_not_in_stock):
 		for item in sales_order.get("items"):
 			item.reserved_warehouse, is_stock_item = frappe.db.get_value("Item",
 				item.item_code, ["website_warehouse", "is_stock_item"])
@@ -251,13 +249,12 @@ def _get_cart_quotation(party=None):
 	if quotation:
 		qdoc = frappe.get_doc("Quotation", quotation[0].name)
 	else:
-		[company, price_list] = frappe.db.get_value("Shopping Cart Settings", None, ["company", "price_list"])
+		company = frappe.db.get_value("Shopping Cart Settings", None, ["company"])
 		qdoc = frappe.get_doc({
 			"doctype": "Quotation",
 			"naming_series": get_shopping_cart_settings().quotation_series or "QTN-CART-",
 			"quotation_to": party.doctype,
 			"company": company,
-			"selling_price_list": price_list,
 			"order_type": "Shopping Cart",
 			"status": "Draft",
 			"docstatus": 0,
@@ -337,18 +334,19 @@ def set_price_list_and_rate(quotation, cart_settings):
 
 def _set_price_list(quotation, cart_settings):
 	"""Set price list based on customer or shopping cart default"""
-	if quotation.selling_price_list:
-		return
+	from erpnext.accounts.party import get_default_price_list
 
 	# check if customer price list exists
 	selling_price_list = None
 	if quotation.party_name:
-		from erpnext.accounts.party import get_default_price_list
-		selling_price_list = get_default_price_list(frappe.get_doc("Customer", quotation.party_name))
+		selling_price_list = frappe.db.get_value('Customer', quotation.party_name, 'default_price_list')
 
 	# else check for territory based price list
 	if not selling_price_list:
 		selling_price_list = cart_settings.price_list
+
+	if not selling_price_list and quotation.party_name:
+		selling_price_list = get_default_price_list(frappe.get_doc("Customer", quotation.party_name))
 
 	quotation.selling_price_list = selling_price_list
 
@@ -539,3 +537,29 @@ def get_address_territory(address_name):
 
 def show_terms(doc):
 	return doc.tc_name
+
+@frappe.whitelist(allow_guest=True)
+def apply_coupon_code(applied_code,applied_referral_sales_partner):
+	quotation = True
+	if applied_code:
+		coupon_list=frappe.get_all('Coupon Code', filters={"docstatus": ("<", "2"), 'coupon_code':applied_code }, fields=['name'])
+		if coupon_list:
+			coupon_name=coupon_list[0].name
+			from erpnext.accounts.doctype.pricing_rule.utils import validate_coupon_code
+			validate_coupon_code(coupon_name)
+			quotation = _get_cart_quotation()
+			quotation.coupon_code=coupon_name
+			quotation.flags.ignore_permissions = True
+			quotation.save()
+			if applied_referral_sales_partner:
+				sales_partner_list=frappe.get_all('Sales Partner', filters={'docstatus': 0, 'referral_code':applied_referral_sales_partner }, fields=['name'])
+				if sales_partner_list:
+					sales_partner_name=sales_partner_list[0].name
+					quotation.referral_sales_partner=sales_partner_name
+					quotation.flags.ignore_permissions = True
+					quotation.save()
+		else:
+			frappe.throw(_("Please enter valid coupon code !!"))
+	else:
+		frappe.throw(_("Please enter coupon code !!"))
+	return quotation

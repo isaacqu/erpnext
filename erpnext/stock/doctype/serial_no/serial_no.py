@@ -362,6 +362,7 @@ def auto_make_serial_nos(args):
 			sr.batch_no = args.get('batch_no')
 			sr.location = args.get('location')
 			sr.company = args.get('company')
+			sr.supplier = args.get('supplier')
 			if sr.sales_order and args.get('voucher_type') == "Stock Entry" \
 				and not args.get('actual_qty', 0) > 0:
 				sr.sales_order = None
@@ -369,10 +370,11 @@ def auto_make_serial_nos(args):
 		elif args.get('actual_qty', 0) > 0:
 			created_numbers.append(make_serial_no(serial_no, args))
 
-	if len(created_numbers) == 1:
-		frappe.msgprint(_("Serial No {0} created").format(created_numbers[0]))
-	elif len(created_numbers) > 0:
-		frappe.msgprint(_("The following serial numbers were created: <br> {0}").format(', '.join(created_numbers)))
+	form_links = list(map(lambda d: frappe.utils.get_link_to_form('Serial No', d), created_numbers))
+	if len(form_links) == 1:
+		frappe.msgprint(_("Serial No {0} created").format(form_links[0]))
+	elif len(form_links) > 0:
+		frappe.msgprint(_("The following serial numbers were created: <br> {0}").format(', '.join(form_links)))
 
 def get_item_details(item_code):
 	return frappe.db.sql("""select name, has_batch_no, docstatus,
@@ -395,10 +397,12 @@ def make_serial_no(serial_no, args):
 	sr.via_stock_ledger = args.get('via_stock_ledger') or True
 	sr.asset = args.get('asset')
 	sr.location = args.get('location')
+	
 
 	if args.get('purchase_document_type'):
 		sr.purchase_document_type = args.get('purchase_document_type')
 		sr.purchase_document_no = args.get('purchase_document_no')
+		sr.supplier = args.get('supplier')
 
 	sr.insert()
 	if args.get('warehouse'):

@@ -89,7 +89,7 @@ class AccountsController(TransactionBase):
 		self.validate_currency()
 
 		if self.doctype == 'Purchase Invoice':
-			self.validate_paid_amount()
+			self.calculate_paid_amount()
 
 		if self.doctype in ['Purchase Invoice', 'Sales Invoice']:
 			pos_check_field = "is_pos" if self.doctype=="Sales Invoice" else "is_paid"
@@ -135,22 +135,23 @@ class AccountsController(TransactionBase):
 			else:
 				df.set("print_hide", 1)
 
-	def validate_paid_amount(self):
+	def calculate_paid_amount(self):
 		if hasattr(self, "is_pos") or hasattr(self, "is_paid"):
 			is_paid = self.get("is_pos") or self.get("is_paid")
-			if cint(is_paid) == 1:
-				if flt(self.paid_amount) == 0 and flt(self.outstanding_amount) > 0:
-					if self.cash_bank_account:
-						self.paid_amount = flt(flt(self.outstanding_amount), self.precision("paid_amount"))
-						self.base_paid_amount = flt(self.paid_amount * self.conversion_rate,
-													self.precision("base_paid_amount"))
-					else:
-						# show message that the amount is not paid
-						self.paid_amount = 0
-						frappe.throw(
-							_("Note: Payment Entry will not be created since 'Cash or Bank Account' was not specified"))
-			else:
-				frappe.db.set(self, 'paid_amount', 0)
+
+			if is_paid:
+				if not self.cash_bank_account:
+					# show message that the amount is not paid
+					frappe.throw(_("Note: Payment Entry will not be created since 'Cash or Bank Account' was not specified"))
+
+				if cint(self.is_return) and self.grand_total > self.paid_amount:
+					self.paid_amount = flt(flt(self.grand_total), self.precision("paid_amount"))
+
+				elif not flt(self.paid_amount) and flt(self.outstanding_amount) > 0:
+					self.paid_amount = flt(flt(self.outstanding_amount), self.precision("paid_amount"))
+
+				self.base_paid_amount = flt(self.paid_amount * self.conversion_rate,
+										self.precision("base_paid_amount"))
 
 	def set_missing_values(self, for_validate=False):
 		if frappe.flags.in_test:
@@ -263,7 +264,7 @@ class AccountsController(TransactionBase):
 					if self.get("is_subcontracted"):
 						args["is_subcontracted"] = self.is_subcontracted
 
-					ret = get_item_details(args, self)
+					ret = get_item_details(args, self, overwrite_warehouse=False)
 
 					for fieldname, value in ret.items():
 						if item.meta.get_field(fieldname) and value is not None:
@@ -605,8 +606,13 @@ class AccountsController(TransactionBase):
 
 					max_allowed_amt = flt(ref_amt * (100 + allowance) / 100)
 
+					if total_billed_amt < 0 and max_allowed_amt < 0:
+						# while making debit note against purchase return entry(purchase receipt) getting overbill error
+						total_billed_amt = abs(total_billed_amt)
+						max_allowed_amt = abs(max_allowed_amt)
+
 					if total_billed_amt - max_allowed_amt > 0.01:
-						frappe.throw(_("Cannot overbill for Item {0} in row {1} more than {2}. To allow over-billing, please set in Stock Settings")
+						frappe.throw(_("Cannot overbill for Item {0} in row {1} more than {2}. To allow over-billing, please set allowance in Accounts Settings")
 							.format(item.item_code, item.idx, max_allowed_amt))
 
 	def get_company_default(self, fieldname):
@@ -1192,6 +1198,25 @@ def update_child_qty_rate(parent_doctype, trans_items, parent_doctype_name, chil
 						 .format(child_item.idx, child_item.item_code))
 		else:
 			child_item.rate = flt(d.get("rate"))
+
+		if flt(child_item.price_list_rate):
+			if flt(child_item.rate) > flt(child_item.price_list_rate):
+				#  if rate is greater than price_list_rate, set margin
+				#  or set discount
+				child_item.discount_percentage = 0
+				child_item.margin_type = "Amount"
+				child_item.margin_rate_or_amount = flt(child_item.rate - child_item.price_list_rate,
+					child_item.precision("margin_rate_or_amount"))
+				child_item.rate_with_margin = child_item.rate
+			else:
+				child_item.discount_percentage = flt((1 - flt(child_item.rate) / flt(child_item.price_list_rate)) * 100.0,
+					child_item.precision("discount_percentage"))
+				child_item.discount_amount = flt(
+					child_item.price_list_rate) - flt(child_item.rate)
+				child_item.margin_type = ""
+				child_item.margin_rate_or_amount = 0
+				child_item.rate_with_margin = 0
+
 		child_item.flags.ignore_validate_update_after_submit = True
 		if new_child_flag:
 			child_item.idx = len(parent.items) + 1
@@ -1203,6 +1228,8 @@ def update_child_qty_rate(parent_doctype, trans_items, parent_doctype_name, chil
 	parent.flags.ignore_validate_update_after_submit = True
 	parent.set_qty_as_per_stock_uom()
 	parent.calculate_taxes_and_totals()
+	if parent_doctype == "Sales Order":
+		parent.set_gross_profit()
 	frappe.get_doc('Authorization Control').validate_approving_authority(parent.doctype,
 		parent.company, parent.base_grand_total)
 
@@ -1214,7 +1241,6 @@ def update_child_qty_rate(parent_doctype, trans_items, parent_doctype_name, chil
 			parent.update_status_updater()
 	else:
 		parent.check_credit_limit()
-
 	parent.save()
 
 	if parent_doctype == 'Purchase Order':
