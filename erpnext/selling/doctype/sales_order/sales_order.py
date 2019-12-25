@@ -34,7 +34,6 @@ class SalesOrder(SellingController):
 
 	def validate(self):
 		super(SalesOrder, self).validate()
-		self.validate_order_type()
 		self.validate_delivery_date()
 		self.validate_proj_cust()
 		self.validate_po()
@@ -99,9 +98,6 @@ class SalesOrder(SellingController):
 				if not res:
 					frappe.msgprint(_("Quotation {0} not of type {1}")
 						.format(d.prevdoc_docname, self.order_type))
-
-	def validate_order_type(self):
-		super(SalesOrder, self).validate_order_type()
 
 	def validate_delivery_date(self):
 		if self.order_type == 'Sales' and not self.skip_delivery_note:
@@ -578,8 +574,12 @@ def make_delivery_note(source_name, target_doc=None, skip_item_mapping=False):
 		target.run_method("set_po_nos")
 		target.run_method("calculate_taxes_and_totals")
 
-		# set company address
-		target.update(get_company_address(target.company))
+		if source.company_address:
+			target.update({'company_address': source.company_address})
+		else:
+			# set company address
+			target.update(get_company_address(target.company))
+
 		if target.company_address:
 			target.update(get_fetch_values("Delivery Note", 'company_address', target.company_address))
 
@@ -645,8 +645,12 @@ def make_sales_invoice(source_name, target_doc=None, ignore_permissions=False):
 		target.run_method("set_po_nos")
 		target.run_method("calculate_taxes_and_totals")
 
-		# set company address
-		target.update(get_company_address(target.company))
+		if source.company_address:
+			target.update({'company_address': source.company_address})
+		else:
+			# set company address
+			target.update(get_company_address(target.company))
+
 		if target.company_address:
 			target.update(get_fetch_values("Sales Invoice", 'company_address', target.company_address))
 
@@ -834,6 +838,10 @@ def make_purchase_order(source_name, for_supplier=None, selected_items=[], targe
 		for item in sales_order.items:
 			if item.supplier and item.supplier not in suppliers:
 				suppliers.append(item.supplier)
+
+	if not suppliers:
+		frappe.throw(_("Please set a Supplier against the Items to be considered in the Purchase Order."))
+
 	for supplier in suppliers:
 		po =frappe.get_list("Purchase Order", filters={"sales_order":source_name, "supplier":supplier, "docstatus": ("<", "2")})
 		if len(po) == 0:
